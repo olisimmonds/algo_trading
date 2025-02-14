@@ -1,8 +1,8 @@
 import pandas as pd
 from datetime import datetime, timedelta
-from src.get_fin_info import get_s_p_tickers
-from src.testing import calc_difference, plot_skatter, breached_threshold
-from src.prediction import predict_stock
+from core_code.get_fin_info import get_s_p_tickers
+from core_code.testing import calc_difference, plot_skatter, breached_threshold
+from core_code.prediction import predict_stock
 
 # Ticker details
 tickers = get_s_p_tickers()
