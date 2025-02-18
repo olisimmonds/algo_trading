@@ -1,6 +1,6 @@
 import numpy as np
 from sklearn.preprocessing import MinMaxScaler
-from models.lstm.lstm import get_train_test_for_lstm, build_model, predict_future
+from src.models.lstm.lstm import get_train_test_for_lstm, build_model, predict_future
 
 def predict_stock(stock_vals):
     # Normalize the data

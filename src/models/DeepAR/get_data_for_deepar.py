@@ -27,15 +27,15 @@ for date, tickers_data in data_records.items():
             # Construct DeepAR formatted entry
             deepar_train_entry = {
                 "start": time_series["Time"][0].strftime("%Y-%m-%d %H:%M:%S"),
-                "target": [entry for entry in time_series["Close"]][:rand_num],
-                "dynamic_feat": [entry for entry in time_series["Volume"]][:rand_num]
+                "target": [entry for entry in time_series["Close"]][:rand_num]#,
+                # "dynamic_feat": [[entry for entry in time_series["Volume"]][:rand_num]]
             }
 
             # Construct DeepAR formatted entry
             deepar_test_entry = {
                 "start": time_series["Time"][rand_num].strftime("%Y-%m-%d %H:%M:%S"),
-                "target": [[entry for entry in time_series["Close"]][rand_num:]],
-                "dynamic_feat": [entry for entry in time_series["Volume"]][:rand_num]
+                "target": [entry for entry in time_series["Close"]][rand_num:]#,
+                # "dynamic_feat": [[entry for entry in time_series["Volume"]][:rand_num]]
             }
 
             deepar_train.append(deepar_train_entry)
