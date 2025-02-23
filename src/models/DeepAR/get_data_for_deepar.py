@@ -16,6 +16,8 @@ output_file_test = "deepar_test_data.jsonl"
 deepar_train = []
 deepar_test = []
 
+prediction_length = 6
+
 # Process each date and ticker
 for date, tickers_data in data_records.items():
     for ticker, time_series in tickers_data.items():
@@ -28,14 +30,16 @@ for date, tickers_data in data_records.items():
             deepar_train_entry = {
                 "start": time_series["Time"][0].strftime("%Y-%m-%d %H:%M:%S"),
                 "target": [entry for entry in time_series["Close"]][:rand_num],
-                "dynamic_feat": [[entry for entry in time_series["Volume"]][:rand_num]]
+                "dynamic_feat": [[entry for entry in time_series["Volume"]][:rand_num]],
+                "item_id": ticker
             }
 
             # Construct DeepAR formatted entry
             deepar_test_entry = {
                 "start": time_series["Time"][rand_num].strftime("%Y-%m-%d %H:%M:%S"),
-                "target": [entry for entry in time_series["Close"]][rand_num:],
-                "dynamic_feat": [[entry for entry in time_series["Volume"]][:rand_num]]
+                "target": [entry for entry in time_series["Close"]][:rand_num+prediction_length],
+                "dynamic_feat": [[entry for entry in time_series["Volume"]][:rand_num+prediction_length]],
+                "item_id": ticker
             }
 
             deepar_train.append(deepar_train_entry)
