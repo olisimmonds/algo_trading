@@ -1,6 +1,8 @@
 # To make predictions on future datasets, I will have to manually add 6 time unitis to the array.
 # Then the evaluation function will cut of this last bit and make predictions on it.
 
+# Need to install gluonts 0.16.0 
+
 import json
 import pandas as pd
 import matplotlib.pyplot as plt

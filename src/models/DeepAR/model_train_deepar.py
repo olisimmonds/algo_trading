@@ -2,6 +2,8 @@ import json
 import pandas as pd
 import matplotlib.pyplot as plt
 
+# Need to install gluonts 0.16.0 
+
 import numpy as np # Requiers Version: 1.23.5
 np.bool = np.bool_
 import mxnet as mx

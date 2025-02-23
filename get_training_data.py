@@ -1,7 +1,7 @@
 import pandas as pd
 from datetime import datetime, timedelta
-from core_code.get_fin_info import get_s_p_tickers
-from core_code.get_fin_info import get_fin_data
+from src.core_code.get_fin_info import get_s_p_tickers
+from src.core_code.get_fin_info import get_fin_data
 import pickle
 import random
 
@@ -9,9 +9,12 @@ import random
 def sort_fin_data(ticker, start, end, interval):
     data = get_fin_data(ticker, start, end, interval)
     times = data.index.tolist()
-    prices = data["Close"].to_numpy().flatten().tolist()
+    close_prices = data["Close"].to_numpy().flatten().tolist()
+    high_prices = data["High"].to_numpy().flatten().tolist()
+    low_prices = data["Low"].to_numpy().flatten().tolist()
+    open_prices = data["Open"].to_numpy().flatten().tolist()
     volumes = data["Volume"].to_numpy().flatten().tolist()
-    return pd.DataFrame({"Time": times, "Close": prices, "Volume": volumes})
+    return pd.DataFrame({"Ticker": ticker, "Time": times, "Close": close_prices, "High": high_prices, "Low": low_prices, "Open": open_prices, "Volume": volumes})
 
 # Parameters
 n_days = 35
@@ -19,10 +22,7 @@ tickers = get_s_p_tickers()
 random.shuffle(tickers)
 tickers = tickers[:50]
 
-# Data Storage
-with open('data_records.pkl', 'rb') as file:
-    data_records = pickle.load(file)
-# I have run this once as of 14/02/25
+data_records = {}
 
 for i in range(n_days):
     date = datetime.today() - timedelta(days=n_days - i)
