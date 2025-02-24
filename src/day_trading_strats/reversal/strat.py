@@ -72,23 +72,33 @@ def detect_reversal_signals(df):
                     if i + 1 >= last_entry + 3:  # Ensure at least 3 candles between entries
                         reversal_points.append(i+1)  # Mark reversal point at next candle
                         last_entry = i + 1  # Update last entry point
-                        print(df["Ticker"][0], last_entry, reversal_points)
 
     return reversal_points
 
 def determine_exit(df, entry_index):
     """Find the exit point based on the given conditions."""
-    
+
+    entry_price = df['Close'].iloc[entry_index]
+
     for i in range(entry_index + 1, len(df)):
         prev_candle = df.iloc[i-1]
         curr_candle = df.iloc[i]
         
+        # Condition 1
         if curr_candle['Close'] < prev_candle['Open'] and curr_candle['Close'] < prev_candle['Close']:
-            return i, df['Close'][i]
+            return i, df['Close'].iloc[i]
         
-        if (curr_candle['High'] >= df['9_EMA'][i] or curr_candle['High'] >= df['20_EMA'][i] or
-            curr_candle['High'] >= df['50_SMA'][i] or curr_candle['High'] >= df['VWAP'][i]):
-            return i, df['Close'][i]
+        # Condition 2
+        possible_exits = [
+            df['9_EMA'].iloc[i] if curr_candle['High'] >= df['9_EMA'].iloc[i] and df['9_EMA'].iloc[i] > entry_price else float('inf'),
+            df['20_EMA'].iloc[i] if curr_candle['High'] >= df['20_EMA'].iloc[i] and df['20_EMA'].iloc[i] > entry_price else float('inf'),
+            df['50_SMA'].iloc[i] if curr_candle['High'] >= df['50_SMA'].iloc[i] and df['50_SMA'].iloc[i] > entry_price else float('inf'),
+            df['VWAP'].iloc[i] if curr_candle['High'] >= df['VWAP'].iloc[i] and df['VWAP'].iloc[i] > entry_price else float('inf'),
+        ]
+
+        min_exit_price = min(possible_exits)
+        if min_exit_price != float('inf'):  # Ensure a valid exit price is found
+            return i, min_exit_price
     
     return None, None
 
@@ -122,16 +132,16 @@ def plot_reversal_signals(df):
     
     for entry_index in reversal_points:
         exit_index, exit_price = determine_exit(df, entry_index)
-        
+        entry_price = df['Close'].iloc[entry_index]
         if exit_index is not None:
-            entry_markers[entry_index] = df['Close'][entry_index]*0.99
-            exit_markers[exit_index] = df['Close'][exit_index]*0.99
-            trades.append((df.index[entry_index], df['Close'][entry_index], df.index[exit_index], exit_price))
+            entry_markers[entry_index] = entry_price*0.99
+            exit_markers[exit_index] = exit_price*0.99
+            trades.append((df.index[entry_index], entry_price, df.index[exit_index], exit_price))
     
     # Create an additional plot for reversal markers
-    ap_entries = mpf.make_addplot(entry_markers, type='scatter', marker='^', color='green', markersize=100)
-    ap_exits = mpf.make_addplot(exit_markers, type='scatter', marker='v', color='red', markersize=100)
-    support_marker = [float(support) for i in range(len(df))]
+    ap_entries = mpf.make_addplot(entry_markers, type='scatter', marker='^', color='green', markersize=10)
+    ap_exits = mpf.make_addplot(exit_markers, type='scatter', marker='v', color='black', markersize=10)
+    support_marker = [float(support[0]) for i in range(len(df))]
     ap_support = mpf.make_addplot(support_marker, type='scatter', marker='o', color='green', markersize=10)
 
     ap_9_ema = mpf.make_addplot(df['9_EMA'], color='orange')
@@ -142,10 +152,10 @@ def plot_reversal_signals(df):
 
     # Plot everything
     mpf.plot(df, type="candle", volume=True, style="charles",
-             title=f"Reversal Trading Strategy {df['Ticker'][0]}",
+             title=f"Reversal Trading Strategy {df['Ticker'].iloc[0]}",
              ylabel="Price", ylabel_lower="Volume",
              addplot=[ap_rsi, ap_entries, ap_exits, ap_support, ap_9_ema, ap_20_ema, ap_50_sma, ap_vwap],
-             alines=dict(alines=[(df.index[idx], df['Low'][idx]) for idx in reversal_points], colors="red", linewidths=1))
+             alines=dict(alines=[(df.index[idx], df['Low'].iloc[idx]) for idx in reversal_points], colors="red", linewidths=1))
 
     return trades
 
