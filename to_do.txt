@@ -10,4 +10,5 @@ Don't need to call minute data for scanner model, try look for API calls which c
 Learn c https://developers.google.com/edu/c++
 
 To Do
+Test 50 day 200 day MA strat
 Build live scanner
