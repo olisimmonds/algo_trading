@@ -1,24 +1,13 @@
-DeepAR (Amazon's GluonTS)
-https://www.youtube.com/watch?v=zQvHESgqFcU
-Need to use HPT
-
-
-
-Test differnet time lengths,
-research models
-test differnt models startergies
-
-Strat buy when 50 day ave is above 200 day
 https://www.barchart.com/stocks/quotes/MMM/interactive-chart
 
 Trading - want to make 10 trades with 1000£ which profit on average 1% makes me 100£. 
-Need to model confidence in up or down rather than amount. Predict max upper and lower bounds along with upper and lower quarters. 
-If upper quarter profit is 2x lower quater lose we can enter. 
-DeepAR (Amazon's GluonTS)
-Temporal Fusion Transformer (TFT)
+Try Temporal Fusion Transformer (TFT)
 
 Need to split into two models, one that searches and finds stocks to focus on and then one which models out the stocks on a lower level which says when to enter and when to exit. 
 Stocks with higher than average volume are good to trade, more volitial. 
 Don't need to call minute data for scanner model, try look for API calls which can scrape metadata. Try hard code strategies and see how they perform on test
 
 Learn c https://developers.google.com/edu/c++
+
+To Do
+Build live scanner
