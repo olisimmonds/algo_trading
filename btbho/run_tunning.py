@@ -569,6 +569,29 @@ def evaluate_params(
             weights_test = build_weights_matrix(data_test, params)
             eq_t_series = run_bt_backtest(weights_test, data_test)
             test_metrics = metrics_from_equity(eq_t_series)
+            # Minimal PnL stats on test: total PnL and average PnL per trade
+            # Build aligned price matrix for test tickers present in weights
+            series_list = []
+            for t in weights_test.columns:
+                if t not in data_test:
+                    continue
+                s = data_test[t]["Close"]
+                if isinstance(s, pd.DataFrame):
+                    s = s.iloc[:, 0]
+                s = s.reindex(weights_test.index).ffill()
+                s.name = t
+                series_list.append(s)
+            if series_list:
+                price = pd.concat(series_list, axis=1).reindex(weights_test.index)
+                ret = price.pct_change().fillna(0.0)
+                w = weights_test.reindex(price.index).fillna(0.0)
+                port_ret = (w.shift(1).fillna(0.0) * ret).sum(axis=1)
+                total_pnl = float((1.0 + port_ret).prod() - 1.0)
+                entries = int(((w != 0) & (w.shift(1).fillna(0) == 0)).sum().sum())
+                avg_pnl_per_trade = float(total_pnl / entries) if entries > 0 else 0.0
+                test_metrics["total_pnl"] = total_pnl
+                test_metrics["avg_pnl_per_trade"] = avg_pnl_per_trade
+                test_metrics["num_trades"] = float(entries)
         except Exception:
             pass
 
@@ -742,7 +765,7 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--start", type=str, default="2015-01-01")
     p.add_argument("--end", type=str, default="2025-01-01")
     p.add_argument("--interval", type=str, default="1d")
-    p.add_argument("--trials", type=int, default=50)
+    p.add_argument("--trials", type=int, default=500)
     p.add_argument("--cv", type=int, default=3, help="CV folds across training tickers")
     p.add_argument("--timeout", type=int, default=None)
     p.add_argument("--l1", type=float, default=0.0, help="L1 regularization lambda")
