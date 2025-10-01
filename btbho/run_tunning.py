@@ -38,6 +38,13 @@ from typing import Dict, List, Tuple, Optional
 import numpy as np
 import pandas as pd
 import warnings
+try:
+    import matplotlib
+    matplotlib.use('Agg')  # non-interactive backend; no GUI windows
+    import matplotlib.pyplot as plt  # type: ignore
+    _HAS_MPL = True
+except Exception:
+    _HAS_MPL = False
 
 # Third-party deps. We keep imports guarded to provide clearer error messages.
 try:
@@ -310,83 +317,6 @@ def compute_weighted_score(features: pd.DataFrame, weights: Dict[str, float]) ->
     return score
 
 
-# ------------------------------ TP/SL Execution ------------------------------
-
-def simulate_positions_with_exits(
-    df: pd.DataFrame,
-    long_signal: pd.Series,
-    short_signal: pd.Series,
-    tp_long: float,
-    sl_long: float,
-    tp_short: float,
-    sl_short: float,
-) -> pd.Series:
-    """Simulate discrete positions (+1, 0, -1) applying TP/SL based on OHLC.
-    Assumes signals indicate new entries when true. One position at a time (flat -> long/short).
-    Exit upon TP/SL hit; re-entry allowed next bar.
-    """
-    open_ = df["Open"].values
-    high = df["High"].values
-    low = df["Low"].values
-
-    lsig = long_signal.fillna(False).astype(bool).values
-    ssig = short_signal.fillna(False).astype(bool).values
-
-    pos = np.zeros(len(df), dtype=int)
-    in_pos = 0  # 0 flat, 1 long, -1 short
-    entry_price = 0.0
-
-    for i in range(1, len(df)):
-        if in_pos == 0:
-            # Consider new entries at bar open
-            if lsig[i] and not ssig[i]:
-                in_pos = 1
-                entry_price = open_[i]
-                pos[i] = 1
-            elif ssig[i] and not lsig[i]:
-                in_pos = -1
-                entry_price = open_[i]
-                pos[i] = -1
-            else:
-                pos[i] = 0
-        elif in_pos == 1:
-            # Check exits intrabar
-            tp = entry_price * tp_long
-            sl = entry_price * sl_long
-            hit_tp = high[i] >= tp
-            hit_sl = low[i] <= sl
-            if hit_tp and not hit_sl:
-                in_pos = 0
-                pos[i] = 0
-            elif hit_sl and not hit_tp:
-                in_pos = 0
-                pos[i] = 0
-            elif hit_tp and hit_sl:
-                # Assume worst case: SL hit first if both within same bar (conservative)
-                in_pos = 0
-                pos[i] = 0
-            else:
-                pos[i] = 1
-        else:  # in_pos == -1
-            tp = entry_price * tp_short  # e.g., 0.93
-            sl = entry_price * sl_short  # e.g., 1.03
-            hit_tp = low[i] <= tp
-            hit_sl = high[i] >= sl
-            if hit_tp and not hit_sl:
-                in_pos = 0
-                pos[i] = 0
-            elif hit_sl and not hit_tp:
-                in_pos = 0
-                pos[i] = 0
-            elif hit_tp and hit_sl:
-                in_pos = 0
-                pos[i] = 0
-            else:
-                pos[i] = -1
-
-    return pd.Series(pos, index=df.index)
-
-
 # --------------------------- Metrics and Objective ---------------------------
 
 def equity_from_positions(df: pd.DataFrame, position: pd.Series, start_equity: float = 1.0) -> pd.Series:
@@ -455,15 +385,9 @@ def positions_for_ticker(df: pd.DataFrame, params: dict) -> pd.Series:
     feats = build_signal_features(df, ind, params)
     weights = build_weights_from_params(params)
     score = compute_weighted_score(feats, weights)
-    buy_th = float(params.get("buy_threshold", 2.0))
-    sell_th = float(params.get("sell_threshold", -2.0))
-    long_signal = score >= buy_th
-    short_signal = score <= sell_th
-    tp_long = float(params.get("tp_long", 1.075))
-    sl_long = float(params.get("sl_long", 0.97))
-    tp_short = float(params.get("tp_short", 0.93))
-    sl_short = float(params.get("sl_short", 1.03))
-    pos = simulate_positions_with_exits(df, long_signal, short_signal, tp_long, sl_long, tp_short, sl_short)
+    # Position is set to be the score rounded to the closest 5 capped between -10 and 10
+    pos = np.round(score / 5) * 5
+    pos = pos.clip(lower=-10, upper=10)
     return pos
 
 
@@ -474,20 +398,21 @@ def build_weights_matrix(data: Dict[str, pd.DataFrame], params: dict) -> pd.Data
     if not positions:
         raise RuntimeError("No positions generated for any ticker.")
     weights = pd.DataFrame(positions).fillna(0.0)
-    # Normalize to equal risk/weights if multiple signals present? We keep as -1/0/1 weights.
     return weights
 
 
-def run_bt_backtest(weights: pd.DataFrame, data: Dict[str, pd.DataFrame]) -> pd.Series:
-    """Run bt backtest and return equity series. Fallback to manual equity if API mismatch."""
-    # Merge close prices in a single DataFrame matching weights index/columns
+def _align_close_matrix(weights: pd.DataFrame, data: Dict[str, pd.DataFrame]) -> pd.DataFrame:
+    """Align and assemble Close price matrix for tickers in `weights`.
+
+    Returns DataFrame indexed as `weights.index`, columns as `weights.columns` (subset that exists in data),
+    forward-filled to handle missing values.
+    """
     series_list = []
     for t in weights.columns:
         if t not in data:
             continue
         s = data[t]["Close"]
         if isinstance(s, pd.DataFrame):
-            # squeeze to 1D
             s = s.iloc[:, 0]
         s = s.reindex(weights.index).ffill()
         s.name = t
@@ -495,42 +420,176 @@ def run_bt_backtest(weights: pd.DataFrame, data: Dict[str, pd.DataFrame]) -> pd.
     if not series_list:
         raise ValueError("No overlapping tickers between weights and data to build price matrix.")
     price = pd.concat(series_list, axis=1).reindex(weights.index)
-    price = price.dropna(how="all")
-    weights = weights.reindex(price.index).fillna(0.0)
+    return price
 
-    try:
-        strat = bt.Strategy(
-            "weighted_signals",
-            [
-                bt.algos.RunDaily(),
-                bt.algos.WeighTarget(weights),
-                bt.algos.Rebalance(),
-            ],
-        )
-        bkt = bt.Backtest(strat, price)
-        res = bt.run(bkt)
-        # Try common ways to access equity
-        if hasattr(res, "get_equity_curve"):
-            eq = res.get_equity_curve()
-            if isinstance(eq, pd.DataFrame):
-                if "weighted_signals" in eq.columns:
-                    return eq["weighted_signals"].copy()
-                return eq.iloc[:, 0].copy()
-            elif isinstance(eq, pd.Series):
-                return eq.copy()
-        # Fallback: res.prices may exist but is prices, not equity; compute from res to be safe
-    except Exception:
-        pass
 
-    # Manual fallback: compute portfolio equity from close-to-close returns and normalized weights
-    ret = price.pct_change().fillna(0.0)
-    # Normalize per-date so sum(abs(weights)) <= 1 to avoid leverage blowup
-    w = weights.copy().fillna(0.0)
-    denom = w.abs().sum(axis=1).replace(0, 1.0)
-    w = w.div(denom, axis=0)
-    port_ret = (ret * w.shift(1).fillna(0.0)).sum(axis=1)
-    equity = (1.0 + port_ret).cumprod()
-    return equity
+def _simulate_ticker_from_targets(close: pd.Series, targets: pd.Series) -> pd.DataFrame:
+    """Simulate per-ticker cashflows and realized PnL from daily target units using close prices.
+
+    targets: desired signed units each day in the set {-10, -5, 0, 5, 10} (or similar ints).
+    Mechanics:
+    - If desired increases on the same side, add units at today's close and update average entry price.
+    - If desired decreases on the same side, realize PnL for the reduced units at today's close.
+    - If sign flips, fully close old side at today's close (realize), then open new side at today's close.
+    - If desired is unchanged, do nothing (no realized PnL).
+
+    Realized PnL formula (unit-returns):
+    - Long close of q units: q * (exit/avg_entry - 1)
+    - Short close of q units: q * (avg_entry/exit - 1)
+
+    Returns a DataFrame per day with columns:
+      - realized_pnl: cash PnL realized that day
+      - spent: cash outflow that day (e.g., buy to open/increase long, buy to close short)
+      - received: cash inflow that day (e.g., sell to reduce/close long, sell to open/increase short)
+    """
+    close = close.astype(float)
+    targets = targets.astype(float).fillna(0.0)
+    idx = close.index
+    n = len(idx)
+    realized = np.zeros(n, dtype=float)
+    spent = np.zeros(n, dtype=float)
+    received = np.zeros(n, dtype=float)
+
+    side = 0  # 0 flat, +1 long, -1 short
+    units = 0.0
+    avg_entry = 0.0
+
+    for i, dt in enumerate(idx):
+        px = float(close.iloc[i])
+        desired = float(targets.iloc[i])
+
+        current_signed = side * units
+        delta = desired - current_signed
+
+        if abs(delta) < 1e-12:
+            # No change
+            continue
+
+        # Helpers for cashflows
+        def realize_pnl(q: float, s: int, avg: float, price: float) -> float:
+            """Cash PnL for closing q units of side s at price."""
+            if q <= 0 or s == 0:
+                return 0.0
+            if s > 0:  # long
+                return q * (price - avg)
+            else:  # short
+                return q * (avg - price)
+
+        if side == 0:
+            # Opening new position from flat
+            if abs(desired) > 0:
+                side = 1 if desired > 0 else -1
+                units = abs(desired)
+                avg_entry = px
+                if side > 0:
+                    # Buy to open
+                    spent[i] += units * px
+                else:
+                    # Sell to open (short)
+                    received[i] += units * px
+        else:
+            desired_side = 0 if abs(desired) == 0 else (1 if desired > 0 else -1)
+            if desired_side == side or desired_side == 0:
+                # Same side or reducing to zero without flipping
+                desired_units = abs(desired)
+                if desired_units > units + 1e-12:
+                    # Add units at px, update average entry
+                    add = desired_units - units
+                    avg_entry = (avg_entry * units + px * add) / (units + add)
+                    units = desired_units
+                    if side > 0:
+                        # Buy more long
+                        spent[i] += add * px
+                    else:
+                        # Increase short -> sell more
+                        received[i] += add * px
+                elif desired_units < units - 1e-12:
+                    # Close partial units at px
+                    close_q = units - desired_units
+                    realized[i] += realize_pnl(close_q, side, avg_entry, px)
+                    if side > 0:
+                        # Sell to reduce long -> receive cash
+                        received[i] += close_q * px
+                    else:
+                        # Buy to reduce short -> spend cash
+                        spent[i] += close_q * px
+                    units = desired_units
+                    if units == 0:
+                        side = 0
+                        avg_entry = 0.0
+                else:
+                    # No change
+                    pass
+            else:
+                # Sign flip: fully close, then open new side
+                if units > 0:
+                    realized[i] += realize_pnl(units, side, avg_entry, px)
+                    if side > 0:
+                        # Close long -> sell
+                        received[i] += units * px
+                    else:
+                        # Close short -> buy
+                        spent[i] += units * px
+                # Open new side with remaining desired units
+                side = desired_side
+                units = abs(desired)
+                avg_entry = px if units > 0 else 0.0
+                if units > 0:
+                    if side > 0:
+                        spent[i] += units * px  # buy to open long
+                    else:
+                        received[i] += units * px  # sell to open short
+
+    return pd.DataFrame({
+        "realized_pnl": realized,
+        "spent": spent,
+        "received": received,
+    }, index=idx)
+
+
+def run_bt_backtest(weights: pd.DataFrame, data: Dict[str, pd.DataFrame]) -> pd.DataFrame:
+    """Custom backtest using daily target units from `weights` and close prices.
+
+    For each ticker, simulate inventory transitions to match the target units per day and compute
+    realized PnL at the close. Aggregate realized PnL across tickers to a portfolio daily PnL, then
+    build an equity curve (starting at 1.0) as 1.0 + cumulative realized PnL.
+
+    Note: Units are abstract; metrics scale with the chosen unit magnitudes. Use consistent targets
+    (e.g., -10,-5,0,5,10) across tickers.
+    """
+    if weights is None or weights.empty:
+        raise ValueError("weights is empty")
+
+    prices = _align_close_matrix(weights, data)
+    weights = weights.reindex(prices.index).fillna(0.0)
+
+    # Compute per-ticker cashflows
+    pnl_parts = []
+    for t in weights.columns:
+        if t not in prices.columns:
+            continue
+        cf = _simulate_ticker_from_targets(prices[t], weights[t])
+        cf.columns = pd.MultiIndex.from_product([[t], cf.columns])
+        pnl_parts.append(cf)
+
+    if not pnl_parts:
+        raise ValueError("No realized PnL components computed.")
+
+    per_ticker = pd.concat(pnl_parts, axis=1)
+    # Aggregate across tickers
+    realized = per_ticker.xs("realized_pnl", axis=1, level=1).sum(axis=1)
+    spent = per_ticker.xs("spent", axis=1, level=1).sum(axis=1)
+    received = per_ticker.xs("received", axis=1, level=1).sum(axis=1)
+    cum_pnl = realized.cumsum()
+    equity = 1.0 + cum_pnl
+    out = pd.DataFrame({
+        "equity": equity,
+        "cum_pnl": cum_pnl,
+        "realized_pnl": realized,
+        "spent": spent,
+        "received": received,
+    }, index=equity.index)
+    return out
 
 
 def evaluate_params(
@@ -551,12 +610,28 @@ def evaluate_params(
     for fold in folds:
         data_fold = {t: data_train[t] for t in fold}
         weights = build_weights_matrix(data_fold, params)
-        # Use bt for returns/equity
-        eq_series = run_bt_backtest(weights, data_fold)
-        m = metrics_from_equity(eq_series)
+        # Custom simulator returns DataFrame with equity, cum_pnl, realized_pnl, spent, received
+        bt_df = run_bt_backtest(weights, data_fold)
+        m = metrics_from_equity(bt_df["equity"])  # compute metrics on equity
+
+        # Print cashflow stats
+        try:
+            max_spent = float(bt_df["spent"].max())
+            max_received = float(bt_df["received"].max())
+            max_pnl_day = float(bt_df["realized_pnl"].max())
+            min_pnl_day = float(bt_df["realized_pnl"].min())
+            print(f"Fold {fold}: max spent/day={max_spent:.2f}, max received/day={max_received:.2f}, max pnl/day={max_pnl_day:.2f}, min pnl/day={min_pnl_day:.2f}")
+        except Exception:
+            pass
+
+        # Ensure finite metrics and objective
+        m = {k: float(np.nan_to_num(v, nan=0.0, posinf=0.0, neginf=0.0)) for k, v in m.items()}
         for k2, v in m.items():
             agg_train_metrics[k2] += v
-        train_scores.append(composite_objective(m, cfg, l1_penalty=l1_from_params(params, cfg.l1_reg)))
+        obj = composite_objective(m, cfg, l1_penalty=l1_from_params(params, cfg.l1_reg))
+        if not np.isfinite(obj):
+            obj = -1e9
+        train_scores.append(obj)
     # Average metrics across folds
     for k2 in agg_train_metrics:
         agg_train_metrics[k2] /= max(len(folds), 1)
@@ -567,8 +642,20 @@ def evaluate_params(
     if data_test:
         try:
             weights_test = build_weights_matrix(data_test, params)
-            eq_t_series = run_bt_backtest(weights_test, data_test)
-            test_metrics = metrics_from_equity(eq_t_series)
+            bt_t_df = run_bt_backtest(weights_test, data_test)
+            test_metrics = metrics_from_equity(bt_t_df["equity"])  # metrics from equity
+            # Cashflow summary on test
+            test_metrics["final_cum_pnl"] = float(bt_t_df["cum_pnl"].iloc[-1]) if not bt_t_df.empty else 0.0
+            test_metrics["max_spent_day"] = float(bt_t_df["spent"].max()) if not bt_t_df.empty else 0.0
+            test_metrics["ave_spent_day"] = float(bt_t_df["spent"].mean()) if not bt_t_df.empty else 0.0
+            test_metrics["total_spent"] = float(bt_t_df["spent"].sum()) if not bt_t_df.empty else 0.0
+            test_metrics["max_received_day"] = float(bt_t_df["received"].max()) if not bt_t_df.empty else 0.0
+            test_metrics["ave_received_day"] = float(bt_t_df["received"].mean()) if not bt_t_df.empty else 0.0
+            test_metrics["total_received"] = float(bt_t_df["received"].sum()) if not bt_t_df.empty else 0.0
+            test_metrics["ave_pnl_day"] = float(bt_t_df["realized_pnl"].mean()) if not bt_t_df.empty else 0.0
+            test_metrics["total_pnl"] = float(bt_t_df["realized_pnl"].sum()) if not bt_t_df.empty else 0.0
+            test_metrics["max_pnl_day"] = float(bt_t_df["realized_pnl"].max()) if not bt_t_df.empty else 0.0
+            test_metrics["min_pnl_day"] = float(bt_t_df["realized_pnl"].min()) if not bt_t_df.empty else 0.0
         except Exception:
             pass
 
@@ -603,12 +690,6 @@ def suggest_params_optuna(trial: "optuna.Trial") -> dict:
     params["buy_threshold"] = trial.suggest_float("buy_threshold", 1.0, 6.0)
     params["sell_threshold"] = trial.suggest_float("sell_threshold", -6.0, -1.0)
 
-    # TP/SL
-    params["tp_long"] = trial.suggest_float("tp_long", 1.02, 1.15)
-    params["sl_long"] = trial.suggest_float("sl_long", 0.90, 0.99)
-    params["tp_short"] = trial.suggest_float("tp_short", 0.85, 0.99)
-    params["sl_short"] = trial.suggest_float("sl_short", 1.005, 1.10)
-
     # Feature weights
     for feat in FEATURE_LIST:
         params[f"w_{feat}"] = trial.suggest_float(f"w_{feat}", -2.0, 2.0)
@@ -633,10 +714,6 @@ def random_param_sample(rng: random.Random) -> dict:
         "cmf_lo": u(-0.5, 0),
         "buy_threshold": u(1.0, 6.0),
         "sell_threshold": u(-6.0, -1.0),
-        "tp_long": u(1.02, 1.15),
-        "sl_long": u(0.90, 0.99),
-        "tp_short": u(0.85, 0.99),
-        "sl_short": u(1.005, 1.10),
     }
     for feat in FEATURE_LIST:
         params[f"w_{feat}"] = u(-2.0, 2.0)
@@ -708,8 +785,6 @@ def optimize_params(
             Real(-1, 1, name="roc_hi"), Real(-1, 1, name="roc_lo"),
             Real(15, 40, name="adx_hi"), Real(0, 0.5, name="cmf_hi"), Real(-0.5, 0, name="cmf_lo"),
             Real(1.0, 6.0, name="buy_threshold"), Real(-6.0, -1.0, name="sell_threshold"),
-            Real(1.02, 1.15, name="tp_long"), Real(0.90, 0.99, name="sl_long"),
-            Real(0.85, 0.99, name="tp_short"), Real(1.005, 1.10, name="sl_short"),
         ] + [Real(-2.0, 2.0, name=f"w_{f}") for f in FEATURE_LIST]
 
         def skopt_objective(x):
@@ -742,7 +817,7 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--start", type=str, default="2015-01-01")
     p.add_argument("--end", type=str, default="2025-01-01")
     p.add_argument("--interval", type=str, default="1d")
-    p.add_argument("--trials", type=int, default=50)
+    p.add_argument("--trials", type=int, default=50000)
     p.add_argument("--cv", type=int, default=3, help="CV folds across training tickers")
     p.add_argument("--timeout", type=int, default=None)
     p.add_argument("--l1", type=float, default=0.0, help="L1 regularization lambda")
