@@ -817,7 +817,7 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--start", type=str, default="2015-01-01")
     p.add_argument("--end", type=str, default="2025-01-01")
     p.add_argument("--interval", type=str, default="1d")
-    p.add_argument("--trials", type=int, default=5Buy 50000)
+    p.add_argument("--trials", type=int, default=50000)
     p.add_argument("--cv", type=int, default=3, help="CV folds across training tickers")
     p.add_argument("--timeout", type=int, default=None)
     p.add_argument("--l1", type=float, default=0.0, help="L1 regularization lambda")
